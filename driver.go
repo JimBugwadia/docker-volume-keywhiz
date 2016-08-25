@@ -3,15 +3,20 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-        "github.com/docker/go-plugins-helpers/volume"
+	keywhizfs "github.com/JimBugwadia/keywhiz-fs/fs"
+	"github.com/docker/go-plugins-helpers/volume"
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
-	"github.com/square/keywhiz-fs"
+	"github.com/rcrowley/go-metrics"
+
+	"github.com/square/go-sq-metrics"
 	klog "github.com/square/keywhiz-fs/log"
 )
 
@@ -48,6 +53,18 @@ func newKeywhizDriver(root string, config keywhizConfig) keywhizDriver {
 	}
 }
 
+func (d keywhizDriver) Capabilities(r volume.Request) volume.Response {
+	return volume.Response{Capabilities: volume.Capability{Scope: "global"}}
+}
+
+func (d keywhizDriver) Get(r volume.Request) volume.Response {
+	return volume.Response{}
+}
+
+func (d keywhizDriver) List(r volume.Request) volume.Response {
+	return volume.Response{}
+}
+
 func (d keywhizDriver) Create(r volume.Request) volume.Response {
 	return volume.Response{}
 }
@@ -69,7 +86,7 @@ func (d keywhizDriver) Path(r volume.Request) volume.Response {
 	return volume.Response{Mountpoint: d.mountpoint(r.Name)}
 }
 
-func (d keywhizDriver) Mount(r volume.Request) volume.Response {
+func (d keywhizDriver) Mount(r volume.MountRequest) volume.Response {
 	d.m.Lock()
 	defer d.m.Unlock()
 	m := d.mountpoint(r.Name)
@@ -105,7 +122,7 @@ func (d keywhizDriver) Mount(r volume.Request) volume.Response {
 	return volume.Response{Mountpoint: m}
 }
 
-func (d keywhizDriver) Unmount(r volume.Request) volume.Response {
+func (d keywhizDriver) Unmount(r volume.UnmountRequest) volume.Response {
 	d.m.Lock()
 	defer d.m.Unlock()
 	m := d.mountpoint(r.Name)
@@ -146,11 +163,19 @@ func (d *keywhizDriver) mountServer(mountpoint string) (*fuse.Server, error) {
 		MaxWait:         maxWait,
 	}
 
+	serverURL, err := url.Parse(d.config.ServerURL)
+	if err != nil {
+		return nil, err
+	}
+
+	metricsHandle := sqmetrics.NewMetrics("", "", http.DefaultClient, (30 * time.Second),
+		metrics.DefaultRegistry, &log.Logger{})
+
 	client := keywhizfs.NewClient(d.config.CertFile, d.config.KeyFile, d.config.CaFile,
-		d.config.ServerURL, d.config.TimeoutSeconds, logConfig, d.config.Ping)
+		serverURL, d.config.TimeoutSeconds, logConfig, metricsHandle)
 
 	ownership := keywhizfs.NewOwnership(d.config.User, d.config.Group)
-	kwfs, root, err := keywhizfs.NewKeywhizFs(&client, ownership, timeouts, logConfig)
+	kwfs, root, err := keywhizfs.NewKeywhizFs(&client, ownership, timeouts, metricsHandle, logConfig)
 	if err != nil {
 		client.Errorf("Mount fail: %v\n", err)
 		return nil, err
